@@ -215,6 +215,7 @@ class FinancialMetricsUpdater:
     def get_metrics_batch(self, tickers: List[str]) -> Tuple[Dict[str, Dict], Dict[str, Dict], bool]:
         successful_results = {}
         failed_results = {}
+        hit_rate_limit = False
         
         for ticker in tickers:
             try:
@@ -296,7 +297,7 @@ class FinancialMetricsUpdater:
                 print(f"Exception fetching {ticker}: {e}")
                 if self._check_rate_limit(e):
                     hit_rate_limit = True
-                    break
+                    return successful_results, failed_results, hit_rate_limit
                 failed_results[ticker] = {'error': str(e)}
                 
         return successful_results, failed_results, hit_rate_limit
