@@ -213,22 +213,23 @@ class FinancialMetricsUpdater:
         return False
 
     def get_metrics_batch(self, tickers: List[str]) -> Tuple[Dict[str, Dict], Dict[str, Dict], bool]:
-        """Fetch metrics for a batch of tickers, returns (successful_results, failed_results, hit_rate_limit)"""
         successful_results = {}
         failed_results = {}
         hit_rate_limit = False
         
         for ticker in tickers:
-            try:
-                if hit_rate_limit:
-                    break
-                        
-                stock = yf.Ticker(ticker)
-                info = stock.info
+            if hit_rate_limit:  # Early exit if rate limited
+                break
                 
-                if isinstance(info, dict) and info.get('status_code') == 429:
-                    hit_rate_limit = True
-                    break
+            try:
+                stock = yf.Ticker(ticker)
+                try:
+                    info = stock.info
+                except HTTPError as e:
+                    if e.response is not None and e.response.status_code == 429:
+                        hit_rate_limit = True
+                        break
+                    raise
                 
                 # Validation that will trigger blacklisting
                 quote_type = info.get('quoteType')
