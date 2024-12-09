@@ -215,12 +215,8 @@ class FinancialMetricsUpdater:
     def get_metrics_batch(self, tickers: List[str]) -> Tuple[Dict[str, Dict], Dict[str, Dict], bool]:
         successful_results = {}
         failed_results = {}
-        hit_rate_limit = False
         
         for ticker in tickers:
-            if hit_rate_limit:  # Early exit if rate limited
-                break
-                
             try:
                 stock = yf.Ticker(ticker)
                 try:
@@ -228,7 +224,8 @@ class FinancialMetricsUpdater:
                 except HTTPError as e:
                     if e.response is not None and e.response.status_code == 429:
                         print(f"Rate limit hit on {ticker}")
-                        raise RateLimitException("Rate limit reached")
+                        # Return immediately with what we have so far
+                        return successful_results, failed_results, True
                     raise
                 
                 # Validation that will trigger blacklisting
@@ -304,19 +301,19 @@ class FinancialMetricsUpdater:
                 
         return successful_results, failed_results, hit_rate_limit
 
-def process_updates(self, batch_size: int = 50):
-    candidates = self.get_stocks_to_update()
-    if not candidates:
-        print("No stocks need updating")
-        return
+    def process_updates(self, batch_size: int = 50):
+        candidates = self.get_stocks_to_update()
+        if not candidates:
+            print("No stocks need updating")
+            return
 
-    for i in range(0, len(candidates), batch_size):
-        batch = candidates[i:i + batch_size]
-        tickers = [stock['ticker'] for stock in batch]
-        
-        try:
-            successful_results, failed_results, _ = self.get_metrics_batch(tickers)
+        for i in range(0, len(candidates), batch_size):
+            batch = candidates[i:i + batch_size]
+            tickers = [stock['ticker'] for stock in batch]
+            
+            successful_results, failed_results, hit_rate_limit = self.get_metrics_batch(tickers)
 
+            # Process successful updates
             successful_updates = [
                 {
                     'rowIndex': stock['rowIndex'],
@@ -326,6 +323,7 @@ def process_updates(self, batch_size: int = 50):
                 if stock['ticker'] in successful_results
             ]
 
+            # Process failed updates
             failed_updates = []
             blacklist_updates = []
             for stock in batch:
@@ -351,46 +349,11 @@ def process_updates(self, batch_size: int = 50):
                 self.update_blacklist_sheet(blacklist_updates)
                 print(f"Blacklisted {len(blacklist_updates)} stocks")
 
-        except RateLimitException:
-            print("Rate limit reached - writing partial results and exiting")
-            # Write any data we collected before the rate limit
-            if 'successful_results' in locals() and successful_results:
-                successful_updates = [
-                    {
-                        'rowIndex': stock['rowIndex'],
-                        'metrics': successful_results[stock['ticker']]
-                    }
-                    for stock in batch
-                    if stock['ticker'] in successful_results
-                ]
-                self.update_metrics_batch(successful_updates)
-            
-            if 'failed_results' in locals() and failed_results:
-                failed_updates = []
-                blacklist_updates = []
-                for stock in batch:
-                    if stock['ticker'] in failed_results:
-                        error = failed_results[stock['ticker']]['error']
-                        update = {
-                            'rowIndex': stock['rowIndex'],
-                            'failures': stock['failures'],
-                            'error': str(error),
-                            'ticker': stock['ticker']
-                        }
-                        failed_updates.append(update)
-                        if self.should_blacklist(error):
-                            blacklist_updates.append(update)
-                
-                if failed_updates:
-                    self.update_failures_batch(failed_updates)
-                if blacklist_updates:
-                    self.update_active_status(blacklist_updates)
-                    self.update_blacklist_sheet(blacklist_updates)
-            
-            print("Exiting due to rate limit")
-            sys.exit(0)
+            if hit_rate_limit:
+                print("Rate limit reached - wrote partial results and exiting")
+                sys.exit(0)
 
-        time.sleep(0.1)
+            time.sleep(0.1)
 
 if __name__ == "__main__":
     SPREADSHEET_ID = os.environ['SPREADSHEET_ID']
