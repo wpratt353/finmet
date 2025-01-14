@@ -8,6 +8,7 @@ import time
 from typing import List, Dict, Any, Tuple
 import sys
 from requests.exceptions import HTTPError
+import json
 
 class RateLimitException(Exception):
     """Custom exception for rate limit handling"""
@@ -121,7 +122,7 @@ class FinancialMetricsUpdater:
             metrics = update['metrics']
             
             data.append({
-                'range': f'Financial Metrics!C{row_idx}:R{row_idx}',
+                'range': f'Financial Metrics!C{row_idx}:U{row_idx}',
                 'values': [[
                     timestamp,                # Last Updated
                     timestamp,                # Last Attempt
@@ -138,7 +139,10 @@ class FinancialMetricsUpdater:
                     metrics['revenue_growth'],
                     metrics['ev_ebitda'],
                     metrics['quick_ratio'],
-                    metrics['fair_value']
+                    metrics['fair_value'],
+                    metrics['current_price'],
+                    metrics['operating_margin'],
+                    metrics['earnings_growth']
                 ]]
             })
         
@@ -205,11 +209,16 @@ class FinancialMetricsUpdater:
 
     def _check_rate_limit(self, error: Exception) -> bool:
         """Check if an error is a rate limit error"""
-        if isinstance(error, HTTPError):
-            if error.response is not None and error.response.status_code == 429:
-                return True
-        if '429' in str(error):
+        # Check the error message itself
+        error_str = str(error).lower()
+        if "429" in error_str or "too many requests" in error_str:
             return True
+            
+        # If it's a JSONDecodeError, check its doc attribute which might contain the rate limit message
+        if type(error).__name__ == 'JSONDecodeError':
+            doc = getattr(error, 'doc', '').lower()
+            return "too many requests" in doc
+            
         return False
 
     def get_metrics_batch(self, tickers: List[str]) -> Tuple[Dict[str, Dict], Dict[str, Dict], bool]:
@@ -223,11 +232,20 @@ class FinancialMetricsUpdater:
                 try:
                     info = stock.info
                 except HTTPError as e:
-                    if e.response is not None and e.response.status_code == 429:
+                    if self._check_rate_limit(e):
                         print(f"Rate limit hit on {ticker}")
-                        # Return immediately with what we have so far
                         return successful_results, failed_results, True
-                    raise
+                    failed_results[ticker] = {'error': str(e)}
+                except json.JSONDecodeError as e:  # Add this import: import json
+                    print(f"JSON decode error for {ticker}: {str(e)}")
+                    print(f"Response text: {getattr(e, 'doc', 'No doc available')}")
+                    if self._check_rate_limit(e):
+                        print(f"Rate limit hit on {ticker}")
+                        return successful_results, failed_results, True
+                    failed_results[ticker] = {'error': str(e)}
+                except Exception as e:
+                    print(f"Non-HTTP error fetching {ticker}: {type(e).__name__}: {str(e)}")
+                    failed_results[ticker] = {'error': str(e)}
                 
                 # Validation that will trigger blacklisting
                 quote_type = info.get('quoteType')
@@ -283,6 +301,9 @@ class FinancialMetricsUpdater:
                     else:
                         fair_value = evebitda_implied
                 metrics['fair_value'] = fair_value
+                metrics['current_price'] = current_price
+                metrics['operating_margin'] = info.get('operatingMargins')
+                metrics['earnings_growth'] = info.get('earningsGrowth')
                         
                 required_metrics = ['fcf_yield', 'roe', 'pb', 'current_ratio', 'debt_equity',
                                 'net_margin', 'roa', 'revenue_growth', 'ev_ebitda',
